@@ -15,6 +15,7 @@ interface StatusUpdateRequest {
   status: 'pending' | 'submitted' | 'complete' | 'failed' | 'cancelled'
   transactionHash?: string
   confirmedAt?: string
+  confirmationData?: any
 }
 
 // PUT endpoint to update payment status (used by frontend)
@@ -117,7 +118,7 @@ export async function POST(req: NextRequest) {
           updateData.submitted_at = new Date().toISOString()
         }
         break
-      case 'confirmed':
+      case 'complete':
         updateData.confirmed_at = new Date().toISOString()
         if (confirmationData) {
           updateData.confirmation_data = confirmationData
@@ -143,6 +144,7 @@ export async function POST(req: NextRequest) {
         amount_cents,
         buyer_id,
         listing_id,
+        transaction_hash,
         created_at,
         submitted_at,
         confirmed_at,
@@ -159,8 +161,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Payment record not found' }, { status: 404 })
     }
 
-    // If payment is confirmed, process the order
-    if (status === 'confirmed' && updatedPayment.listing_id) {
+    // If payment is complete, process the order
+    if (status === 'complete' && updatedPayment.listing_id) {
       try {
         // Create marketplace transaction record
         await admin.from('marketplace_transactions').insert({
@@ -171,7 +173,7 @@ export async function POST(req: NextRequest) {
           status: 'completed',
           payment_method: 'crypto',
           crypto_payment_id: updatedPayment.id,
-          transaction_hash: updatedPayment.transaction_hash,
+          transaction_hash: transactionHash,
         })
 
         console.log('✅ Order processed successfully for crypto payment:', updatedPayment.id)
