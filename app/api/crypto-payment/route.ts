@@ -47,6 +47,10 @@ interface CryptoPaymentRequest {
   cardFinish?: string
   shippingAddress: ShippingAddress
   orderItems?: string
+  // Custom card details
+  customImageUrl?: string
+  // Cart items
+  cartItems?: any[]
 }
 
 export async function POST(req: NextRequest) {
@@ -57,8 +61,10 @@ export async function POST(req: NextRequest) {
       includeDisplayCase = false, 
       displayCaseQuantity = 1,
       cardFinish = 'matte',
-      shippingAddress,
-      orderItems = 'Custom Card'
+      shippingAddress, 
+      orderItems = 'Custom Card',
+      customImageUrl,
+      cartItems
     }: CryptoPaymentRequest = await req.json()
     
     if (!shippingAddress) {
@@ -263,6 +269,10 @@ export async function POST(req: NextRequest) {
         metadata: {
           payment_method: 'crypto',
           tax_calculation_source: 'taxjar_api',
+          // Include order-specific metadata
+          ...(customImageUrl && { custom_image_url: customImageUrl }),
+          ...(cartItems && { cart_items: cartItems }),
+          ...(listingId && { listing_id: listingId })
         },
       })
       .select()
