@@ -1,0 +1,393 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { createClient } from '@supabase/supabase-js'
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Textarea } from "@/components/ui/textarea"
+import { AlertTriangle, CheckCircle, XCircle, Eye, User, Calendar, Image as ImageIcon } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import Image from "next/image"
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
+
+type DuplicateDetection = {
+  id: string
+  asset_id: string
+  user_id: string
+  similarity_score: number
+  matched_asset_id: string
+  matched_user_id: string
+  detection_method: string
+  status: string
+  admin_notes: string | null
+  reviewed_by: string | null
+  reviewed_at: string | null
+  created_at: string
+  updated_at: string
+  asset: {
+    id: string
+    title: string
+    image_url: string
+    user_id: string
+    asset_type: string
+    storage_path: string
+    profile?: {
+      id: string
+      display_name: string
+      email: string
+      avatar_url?: string
+    }
+  }
+  matched_asset: {
+    id: string
+    title: string
+    image_url: string
+    user_id: string
+    asset_type: string
+    storage_path: string
+    profile?: {
+      id: string
+      display_name: string
+      email: string
+      avatar_url?: string
+    }
+  }
+}
+
+export default function DuplicateReviewPage() {
+  const [detections, setDetections] = useState<DuplicateDetection[]>([])
+  const [loading, setLoading] = useState(true)
+  const [reviewing, setReviewing] = useState<string | null>(null)
+  const [notes, setNotes] = useState('')
+  const { toast } = useToast()
+
+  useEffect(() => {
+    fetchDetections()
+  }, [])
+
+  async function fetchDetections() {
+    try {
+      console.log('🔍 Fetching duplicate detections directly from Supabase...')
+      
+      // Simple query - just get the basic duplicate detection data
+      const { data: duplicateData, error: duplicateError } = await supabase
+        .from("duplicate_detections")
+        .select("*")
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false })
+
+      if (duplicateError) {
+        console.error('❌ Error fetching duplicate detections:', duplicateError)
+        toast({
+          title: "Error",
+          description: "Failed to fetch detections",
+          variant: "destructive"
+        })
+        return
+      }
+
+      console.log('✅ Detections fetched successfully:', duplicateData?.length || 0, 'items')
+      
+      if (duplicateData && duplicateData.length > 0) {
+        // Simple mapping - just show basic detection info
+        const simpleDetections = duplicateData.map(detection => ({
+          ...detection,
+          asset: {
+            id: detection.asset_id,
+            title: `Asset ${detection.asset_id.slice(0, 8)}...`,
+            image_url: '/placeholder.jpg',
+            user_id: detection.user_id,
+            asset_type: 'uploaded',
+            storage_path: '',
+            profile: null
+          },
+          matched_asset: {
+            id: detection.matched_asset_id,
+            title: `Asset ${detection.matched_asset_id.slice(0, 8)}...`,
+            image_url: '/placeholder.jpg',
+            user_id: detection.matched_user_id || detection.user_id,
+            asset_type: 'uploaded',
+            storage_path: '',
+            profile: null
+          }
+        }))
+        
+        setDetections(simpleDetections)
+      } else {
+        setDetections([])
+      }
+    } catch (error) {
+      console.error('💥 Fetch error:', error)
+      toast({
+        title: "Error",
+        description: "Failed to fetch detections",
+        variant: "destructive"
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleReview(detectionId: string, action: 'approved' | 'rejected') {
+    setReviewing(detectionId)
+    
+    try {
+      const response = await fetch('/api/admin/duplicate-review', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          detectionId,
+          action,
+          notes: notes.trim() || null
+        })
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        toast({
+          title: "Success",
+          description: `Detection ${action} successfully`,
+          variant: "default"
+        })
+        
+        // Refresh the detections list instead of just removing from local state
+        // This ensures we get the updated list from the server
+        await fetchDetections()
+        setNotes('')
+      } else {
+        toast({
+          title: "Error",
+          description: data.error || `Failed to ${action} detection`,
+          variant: "destructive"
+        })
+      }
+    } catch (error) {
+      console.error('Error reviewing detection:', error)
+      toast({
+        title: "Error",
+        description: `Failed to ${action} detection`,
+        variant: "destructive"
+      })
+    } finally {
+      setReviewing(null)
+    }
+  }
+
+  function getSimilarityColor(score: number) {
+    if (score > 0.8) return 'text-red-400'
+    if (score > 0.6) return 'text-orange-400'
+    if (score > 0.4) return 'text-yellow-400'
+    return 'text-green-400'
+  }
+
+  function getSimilarityLabel(score: number) {
+    if (score > 0.8) return 'Very Low'
+    if (score > 0.6) return 'Low'
+    if (score > 0.4) return 'Medium'
+    return 'High'
+  }
+
+  function getSimilarityPercentage(score: number) {
+    // LPIPS is a distance metric: lower = more similar
+    // Convert to similarity percentage: (1 - score) * 100
+    return Math.round((1 - score) * 100)
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-cyber-black text-white px-6 pt-20 pb-10">
+        <div className="mx-auto max-w-7xl">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-cyber-cyan mx-auto"></div>
+            <p className="mt-4 text-gray-400">Loading duplicate detections...</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-cyber-black text-white px-6 pt-20 pb-10">
+      <div className="mx-auto max-w-7xl">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-4xl font-bold text-cyber-cyan mb-2">Duplicate Image Review</h1>
+            <p className="text-gray-400">Review and approve/reject duplicate image detections</p>
+          </div>
+          <div className="flex items-center gap-4">
+            <Button
+              onClick={fetchDetections}
+              disabled={loading}
+              variant="outline"
+              className="border-cyber-cyan/30 text-cyber-cyan hover:bg-cyber-cyan/10"
+            >
+              <div className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`}>
+                {loading ? (
+                  <div className="rounded-full h-4 w-4 border-b-2 border-cyber-cyan"></div>
+                ) : (
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                )}
+              </div>
+              Refresh
+            </Button>
+            <Badge className="bg-amber-500 text-black font-semibold px-3 py-1">
+              {detections.length} Pending
+            </Badge>
+          </div>
+        </div>
+
+        {detections.length === 0 ? (
+          <Card className="bg-cyber-dark/60 border border-cyber-cyan/30">
+            <CardContent className="p-12 text-center">
+              <CheckCircle className="h-16 w-16 text-green-400 mx-auto mb-4" />
+              <h3 className="text-xl font-semibold text-white mb-2">All Caught Up!</h3>
+              <p className="text-gray-400">No duplicate images pending review.</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-6">
+            {detections.map((detection) => (
+              <Card key={detection.id} className="bg-cyber-dark/60 border border-cyber-cyan/30">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <AlertTriangle className="h-6 w-6 text-amber-400" />
+                      <div>
+                        <CardTitle className="text-white">Duplicate Detection</CardTitle>
+                        <p className="text-sm text-gray-400">
+                          Detected on {new Date(detection.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <Badge className={`${getSimilarityColor(detection.similarity_score)} bg-transparent border`}>
+                        {getSimilarityLabel(detection.similarity_score)} Similarity
+                      </Badge>
+                      <p className="text-sm text-gray-400 mt-1">
+                        {getSimilarityPercentage(detection.similarity_score)}% similar
+                      </p>
+                    </div>
+                  </div>
+                </CardHeader>
+                
+                <CardContent>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                    {/* Original Image */}
+                    <div className="space-y-3">
+                      <h4 className="font-semibold text-cyber-cyan flex items-center gap-2">
+                        <ImageIcon className="h-4 w-4" />
+                        Original Image
+                      </h4>
+                      <div className="relative">
+                        <Image
+                          src={detection.asset.image_url}
+                          alt={detection.asset.title || 'Original Image'}
+                          width={300}
+                          height={200}
+                          className="rounded-lg object-cover w-full h-48"
+                          onError={(e) => {
+                            // Fallback to placeholder if image fails to load
+                            const target = e.target as HTMLImageElement
+                            target.src = '/placeholder.jpg'
+                          }}
+                        />
+                      </div>
+                      <div className="bg-cyber-dark/40 p-3 rounded-lg">
+                        <p className="font-medium text-white">{detection.asset.title || 'Untitled'}</p>
+                        <p className="text-sm text-gray-400">
+                          {detection.asset.profile?.display_name || detection.asset.profile?.email || 'Unknown User'}
+                        </p>
+                        <p className="text-xs text-gray-500">{detection.asset.asset_type}</p>
+                        <p className="text-xs text-gray-500">ID: {detection.asset.id.slice(0, 8)}...</p>
+                      </div>
+                    </div>
+
+                    {/* Matched Image */}
+                    <div className="space-y-3">
+                      <h4 className="font-semibold text-cyber-pink flex items-center gap-2">
+                        <ImageIcon className="h-4 w-4" />
+                        Matched Image
+                      </h4>
+                      <div className="relative">
+                        <Image
+                          src={detection.matched_asset.image_url}
+                          alt={detection.matched_asset.title || 'Matched Image'}
+                          width={300}
+                          height={200}
+                          className="rounded-lg object-cover w-full h-48"
+                          onError={(e) => {
+                            // Fallback to placeholder if image fails to load
+                            const target = e.target as HTMLImageElement
+                            target.src = '/placeholder.jpg'
+                          }}
+                        />
+                      </div>
+                      <div className="bg-cyber-dark/40 p-3 rounded-lg">
+                        <p className="font-medium text-white">{detection.matched_asset.title || 'Untitled'}</p>
+                        <p className="text-sm text-gray-400">
+                          {detection.matched_asset.profile?.display_name || detection.matched_asset.profile?.email || 'Unknown User'}
+                        </p>
+                        <p className="text-xs text-gray-500">{detection.matched_asset.asset_type}</p>
+                        <p className="text-xs text-gray-500">ID: {detection.matched_asset.id.slice(0, 8)}...</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Admin Notes */}
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Admin Notes (Optional)
+                    </label>
+                    <Textarea
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="Add notes about your decision..."
+                      className="bg-cyber-dark/40 border-cyber-cyan/30 text-white placeholder-gray-500"
+                      rows={3}
+                    />
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex gap-3">
+                    <Button
+                      onClick={() => handleReview(detection.id, 'approved')}
+                      disabled={reviewing === detection.id}
+                      className="bg-green-600 hover:bg-green-700 text-white font-semibold"
+                    >
+                      <CheckCircle className="h-4 w-4 mr-2" />
+                      Approve
+                    </Button>
+                    <Button
+                      onClick={() => handleReview(detection.id, 'rejected')}
+                      disabled={reviewing === detection.id}
+                      className="bg-red-600 hover:bg-red-700 text-white font-semibold"
+                    >
+                      <XCircle className="h-4 w-4 mr-2" />
+                      Reject
+                    </Button>
+                    {reviewing === detection.id && (
+                      <div className="flex items-center text-gray-400">
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-cyber-cyan mr-2"></div>
+                        Processing...
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
