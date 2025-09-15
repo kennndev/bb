@@ -1,12 +1,30 @@
+// app/api/crypto-payment/route.ts
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs'
 import { cookies } from 'next/headers'
 import { stripe } from '@/lib/stripe'
 import Taxjar from 'taxjar'
-import { getShippingCostForCountry } from '@/lib/shipping-utils'
 
 export const dynamic = 'force-dynamic'
+
+// === Config =====================================================================================
+
+// If you want to force-tax for specific destinations during testing, set this to true
+// and add real nexus addresses below. Keep false in production unless you truly have nexus.
+const ENABLE_TEST_NEXUS = false as const
+
+// Example nexus map for testing (fill with your REAL nexus locations only)
+const TEST_NEXUS_ADDRESSES: Record<string, { country: string; state: string; zip: string; city: string; street: string }[]> = {
+  // US-IL example (Springfield). Add more states/regions as needed.
+  'US-IL': [
+    { country: 'US', state: 'IL', zip: '62704', city: 'Springfield', street: '10 Example Rd' }
+  ],
+  // Canada-ON example:
+  'CA-ON': [
+    { country: 'CA', state: 'ON', zip: 'M5H2N2', city: 'Toronto', street: '123 Queen St W' }
+  ],
+}
 
 // service-role (RLS bypass)
 const admin = createClient(
@@ -22,20 +40,18 @@ const taxjar = new Taxjar({
   apiKey: process.env.TAXJAR_API_KEY || '5fc8b688d4ff26db51cc9702b001e7c3'
 })
 
-// Shipping costs are now imported from shared utility
-
 interface ShippingAddress {
   email?: string
   name?: string
   company?: string
-  line1: string  // This is what the form sends
+  line1: string              // form field
   line2?: string
-  address?: string  // This is what we need for the database
+  address?: string           // db field
   addressLine2?: string
   city: string
   state: string
-  postal_code: string  // This is what the form sends
-  zipcode?: string  // This is what we need for the database
+  postal_code: string        // form field
+  zipcode?: string           // db field
   country: string
 }
 
@@ -47,10 +63,29 @@ interface CryptoPaymentRequest {
   cardFinish?: string
   shippingAddress: ShippingAddress
   orderItems?: string
-  // Custom card details
   customImageUrl?: string
-  // Cart items
   cartItems?: any[]
+}
+
+// Helpers ----------------------------------------------------------------------------------------
+
+function buildTestNexus(country: string, state: string) {
+  if (!ENABLE_TEST_NEXUS) return undefined
+  const key = `${country}-${state}`
+  const entries = TEST_NEXUS_ADDRESSES[key]
+  if (!entries?.length) return undefined
+  return entries.map((e, idx) => ({
+    id: `nexus-${key.toLowerCase()}-${idx}`,
+    country: e.country,
+    state: e.state,
+    zip: e.zip,
+    city: e.city,
+    street: e.street,
+  }))
+}
+
+function cents(n: number) {
+  return Math.round(n * 100)
 }
 
 export async function POST(req: NextRequest) {
@@ -91,29 +126,37 @@ export async function POST(req: NextRequest) {
     
     const buyerId = user?.id || null
 
-    // Calculate base amount ($9.00 in cents)
-    const baseAmountCents = 900
-    
-    // For crypto payments, we only charge the base amount + tax (no shipping cost)
-    const totalBeforeTaxCents = baseAmountCents // Product only (no shipping for crypto)
+    // Pricing: product only (no shipping for crypto)
+    const unitPriceUsd = 9.00
+    const quantityInt = Math.max(1, Math.floor(quantity))
+    const baseAmountUsd = unitPriceUsd * quantityInt
+    const baseAmountCents = cents(baseAmountUsd)
+    const totalBeforeTaxCents = baseAmountCents // Product only (no shipping)
 
-    // Get tax rate from TaxJar API (more accurate than Stripe Tax)
-    let taxRate = 0
+    // === Tax calculation (TaxJar) ===============================================================
+
+    let taxRatePct = 0
     let taxAmountCents = 0
-    
+
+    // Build nexus (optional for testing)
+    const testNexus = buildTestNexus(shippingAddress.country, shippingAddress.state)
+
+    // Invariant guard: amount must equal Σ(line_items), shipping must be 0
+    const payloadAmount = totalBeforeTaxCents / 100
+    const sumLineItems = unitPriceUsd * quantityInt
+    if (Number(payloadAmount.toFixed(2)) !== Number(sumLineItems.toFixed(2))) {
+      return NextResponse.json({ error: 'Tax payload mismatch: amount must equal sum(line_items).' }, { status: 400 })
+    }
+
     console.log('🧾 TaxJar Tax Calculation Details:')
-    console.log('   Base Amount: $' + (baseAmountCents / 100).toFixed(2))
-    console.log('   Total Before Tax: $' + (totalBeforeTaxCents / 100).toFixed(2))
-    console.log('   Country: ' + shippingAddress.country)
-    console.log('   State: ' + shippingAddress.state)
-    console.log('   City: ' + shippingAddress.city)
-    console.log('   Zipcode: ' + zipcode)
-    
+    console.log('   Base Amount (USD):', baseAmountUsd.toFixed(2))
+    console.log('   Country/State/City/Zip:', shippingAddress.country, shippingAddress.state, shippingAddress.city, zipcode)
+    console.log('   Using test nexus:', !!testNexus)
+
     try {
       console.log('   Calling TaxJar API...')
       
-      // Use TaxJar API for accurate tax calculation (no shipping for crypto payments)
-      const taxCalculation = await taxjar.taxForOrder({
+      const taxArgs: any = {
         from_country: 'US',
         from_zip: '89108',
         from_state: 'NV',
@@ -123,55 +166,58 @@ export async function POST(req: NextRequest) {
         to_state: shippingAddress.state,
         to_city: shippingAddress.city,
         to_street: address,
-        amount: totalBeforeTaxCents / 100, // Convert cents to dollars (product only)
-        shipping: 0, // No shipping cost for crypto payments
+        amount: payloadAmount,   // equals Σ(line_items)
+        shipping: 0,             // no shipping in crypto flow
         line_items: [
           {
             id: 'card-001',
-            quantity: 1,
-            unit_price: baseAmountCents / 100, // Convert cents to dollars
-            product_tax_code: '31000' // General merchandise
+            quantity: quantityInt,
+            unit_price: unitPriceUsd,
+            // IMPORTANT: omit product_tax_code for general taxable goods OR use "00000"
+            // product_tax_code: '00000',
           }
         ]
-      })
+      }
+
+      if (testNexus) {
+        taxArgs.nexus_addresses = testNexus
+      }
+
+      const taxCalculation = await taxjar.taxForOrder(taxArgs)
 
       console.log('   TaxJar Response:', {
         rate: taxCalculation.tax.rate,
         amount_to_collect: taxCalculation.tax.amount_to_collect,
         taxable_amount: taxCalculation.tax.taxable_amount,
         freight_taxable: taxCalculation.tax.freight_taxable,
-        full_response: JSON.stringify(taxCalculation, null, 2)
       })
-      
-      // Log detailed tax breakdown
+
       if (taxCalculation.tax.breakdown) {
-        console.log('   📊 TaxJar Breakdown:', {
-          shipping_tax: taxCalculation.tax.breakdown.shipping?.tax_collectable,
-          line_items_tax: taxCalculation.tax.breakdown.line_items?.[0]?.tax_collectable,
-          combined_tax_rate: taxCalculation.tax.breakdown.combined_tax_rate
+        console.log('   📊 Breakdown:', {
+          tax_collectable: taxCalculation.tax.breakdown.tax_collectable,
+          combined_tax_rate: taxCalculation.tax.breakdown.combined_tax_rate,
+          by_juris: {
+            state_amount: taxCalculation.tax.breakdown.state_tax_collectable,
+            county_amount: taxCalculation.tax.breakdown.county_tax_collectable,
+            city_amount: taxCalculation.tax.breakdown.city_tax_collectable,
+            special_amount: taxCalculation.tax.breakdown.special_district_tax_collectable,
+          }
         })
       }
 
-      // Calculate tax rate and amount
-      if (taxCalculation.tax.amount_to_collect > 0) {
-        taxRate = taxCalculation.tax.rate * 100 // Convert to percentage
-        taxAmountCents = Math.round(taxCalculation.tax.amount_to_collect * 100) // Convert to cents
-        
-        console.log('   ✅ TaxJar Tax Calculated:')
-        console.log('      Tax Amount: $' + (taxAmountCents / 100).toFixed(2))
-        console.log('      Tax Rate: ' + taxRate.toFixed(2) + '%')
-        console.log('      Freight Taxable: ' + taxCalculation.tax.freight_taxable)
-      } else {
-        console.log('   ℹ️ No tax calculated (amount: 0)')
-      }
-    } catch (taxError) {
-      console.warn('   ⚠️ TaxJar API failed:', {
-        error: taxError instanceof Error ? taxError.message : 'Unknown error',
-        response: taxError instanceof Error && 'response' in taxError ? taxError.response : undefined,
-        stack: taxError instanceof Error ? taxError.stack : undefined
+      // Use TaxJar amounts directly
+      taxRatePct = +(taxCalculation.tax.rate * 100).toFixed(4) // e.g., 9.75
+      taxAmountCents = Math.round(taxCalculation.tax.amount_to_collect * 100)
+
+      console.log('   ✅ Tax computed:', {
+        taxRatePct,
+        taxAmountUsd: (taxAmountCents / 100).toFixed(2),
       })
-      
-      // Try fallback to Stripe Tax if TaxJar fails
+
+    } catch (taxError) {
+      console.warn('   ⚠️ TaxJar API failed:', taxError)
+
+      // Fallback: Stripe Tax (optional)
       try {
         console.log('   🔄 Trying Stripe Tax as fallback...')
         const stripeTaxCalculation = await stripe.tax.calculations.create({
@@ -197,51 +243,46 @@ export async function POST(req: NextRequest) {
         })
         
         if (stripeTaxCalculation.tax_amount_exclusive > 0) {
-          taxRate = (stripeTaxCalculation.tax_amount_exclusive / totalBeforeTaxCents) * 100
+          taxRatePct = +( (stripeTaxCalculation.tax_amount_exclusive / totalBeforeTaxCents) * 100 ).toFixed(4)
           taxAmountCents = Math.round(stripeTaxCalculation.tax_amount_exclusive)
-          console.log('   ✅ Stripe Tax Fallback Calculated:')
-          console.log('      Tax Amount: $' + (taxAmountCents / 100).toFixed(2))
-          console.log('      Tax Rate: ' + taxRate.toFixed(2) + '%')
+          console.log('   ✅ Stripe Tax fallback computed:', {
+            taxRatePct,
+            taxAmountUsd: (taxAmountCents / 100).toFixed(2),
+          })
         }
       } catch (stripeTaxError) {
         console.warn('   ⚠️ Stripe Tax fallback also failed:', stripeTaxError)
       }
     }
     
-    const totalAmountCents = totalBeforeTaxCents + taxAmountCents // Product + Tax (no shipping for crypto)
+    const totalAmountCents = totalBeforeTaxCents + taxAmountCents
     console.log('   💰 Final Amounts:')
     console.log('      Base: $' + (baseAmountCents / 100).toFixed(2))
-    console.log('      Shipping: $0.00 (not included in crypto payments)')
+    console.log('      Shipping: $0.00 (crypto flow)')
     console.log('      Tax: $' + (taxAmountCents / 100).toFixed(2))
     console.log('      Total: $' + (totalAmountCents / 100).toFixed(2))
-    console.log('   📊 Database Values:')
-    console.log('      amount_cents: ' + totalAmountCents)
-    console.log('      base_amount_cents: ' + totalBeforeTaxCents)
-    console.log('      tax_amount_cents: ' + taxAmountCents)
-    console.log('      tax_rate_percentage: ' + taxRate)
 
-    // Generate unique transaction ID
+    // Generate ids
     const transactionId = `crypto_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-
-    // Generate order ID (matching the format from your image)
     const orderId = `923${String(Date.now()).slice(-3)}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`
 
-    // Save crypto payment record to database in exact format from your image
+    // Save record
     const { data: cryptoPayment, error: dbError } = await admin
       .from('crypto_payments')
       .insert({
         transaction_id: transactionId,
-        buyer_id: buyerId,
+        buyer_id: user?.id || null,
         listing_id: listingId || null,
-        amount_cents: totalAmountCents, // Total: Product + Tax (no shipping for crypto)
-        base_amount_cents: totalBeforeTaxCents, // Product only (before tax)
+
+        amount_cents: totalAmountCents,           // Product + Tax (no shipping)
+        base_amount_cents: totalBeforeTaxCents,   // Product only
         tax_amount_cents: taxAmountCents,
-        tax_rate_percentage: taxRate,
+        tax_rate_percentage: taxRatePct,          // e.g., 9.75
+
         currency: 'USD',
         status: 'pending',
         receiving_address: CRYPTO_RECEIVING_ADDRESS,
-        
-        // EXACT COLUMNS FROM YOUR IMAGE:
+
         company: shippingAddress.company || null,
         address: address,
         address_line_2: addressLine2 || null,
@@ -249,25 +290,23 @@ export async function POST(req: NextRequest) {
         state: shippingAddress.state,
         zipcode: zipcode,
         country: shippingAddress.country,
+
         order_id: orderId,
         order_items: orderItems,
-        
-        // Additional order details
-        quantity: quantity,
+
+        quantity: quantityInt,
         include_display_case: includeDisplayCase,
         display_case_quantity: displayCaseQuantity,
         card_finish: cardFinish,
-        
-        // Package dimensions (to be filled later by staff)
+
         pounds: null,
         length: null,
         width: null,
         height: null,
-        
+
         metadata: {
           payment_method: 'crypto',
           tax_calculation_source: 'taxjar_api',
-          // Include order-specific metadata
           ...(customImageUrl && { custom_image_url: customImageUrl }),
           ...(cartItems && { cart_items: cartItems }),
           ...(listingId && { listing_id: listingId })
@@ -281,25 +320,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to create payment record' }, { status: 500 })
     }
 
-    console.log('✅ Payment saved to database:', {
+    console.log('✅ Payment saved:', {
       id: cryptoPayment.id,
       transaction_id: cryptoPayment.transaction_id,
       amount_cents: cryptoPayment.amount_cents,
-      base_amount_cents: cryptoPayment.base_amount_cents,
       tax_amount_cents: cryptoPayment.tax_amount_cents,
       tax_rate_percentage: cryptoPayment.tax_rate_percentage,
       status: cryptoPayment.status
     })
 
-    // Return payment details for frontend
     return NextResponse.json({
       success: true,
       transactionId,
-      amount: totalAmountCents, // Total: Product + Shipping + Tax
-      baseAmount: baseAmountCents, // Product only
-      shippingAmount: 0, // No shipping for crypto payments
+      amount: totalAmountCents,
+      baseAmount: baseAmountCents,
+      shippingAmount: 0,
       taxAmount: taxAmountCents,
-      taxRate: taxRate,
+      taxRate: taxRatePct,
       receivingAddress: CRYPTO_RECEIVING_ADDRESS,
       paymentId: cryptoPayment.id,
       message: `Please send $${(totalAmountCents / 100).toFixed(2)} USD worth of crypto to the address below.`,
@@ -310,4 +347,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Payment creation failed' }, { status: 500 })
   }
 }
-
