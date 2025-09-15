@@ -126,10 +126,11 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
 
   // Monitor wallet connection status (simplified like WalletButton)
   useEffect(() => {
+    console.log('🔍 Wallet state:', { ready, isConnected, address })
     if (isConnected && address) {
       console.log('✅ Wallet connected:', address)
     }
-  }, [isConnected, address])
+  }, [ready, isConnected, address])
 
   // Get regions for the selected country
   const regions = useMemo(() => {
@@ -985,7 +986,18 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
                 <p className="text-gray-600 mb-4">Connect your wallet to proceed with crypto payment</p>
                 {!isConnected ? (
                   <div className="w-full">
-                    <WalletButton />
+                    {ready ? (
+                      <WalletButton />
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        className="w-full bg-gray-300 border-2 border-gray-400 text-gray-500 px-4 py-2 rounded-lg font-medium cursor-not-allowed"
+                      >
+                        <Wallet className="w-4 h-4 mr-2 inline" />
+                        Loading...
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -1047,7 +1059,18 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
                   <div className="text-center">
                     <p className="text-gray-600 mb-4">Connect your wallet to send payment</p>
                     <div className="w-full">
-                      <WalletButton />
+                      {ready ? (
+                        <WalletButton />
+                      ) : (
+                        <button
+                          type="button"
+                          disabled
+                          className="w-full bg-gray-300 border-2 border-gray-400 text-gray-500 px-4 py-2 rounded-lg font-medium cursor-not-allowed"
+                        >
+                          <Wallet className="w-4 h-4 mr-2 inline" />
+                          Loading...
+                        </button>
+                      )}
                     </div>
                     <p className="text-xs text-gray-500 mt-2">
                       Click "Connect Wallet" first, then "Create Crypto Payment"
