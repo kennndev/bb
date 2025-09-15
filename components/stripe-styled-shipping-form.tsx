@@ -94,9 +94,22 @@ interface StripeStyledShippingFormProps {
   onBack: () => void
   isSubmitting?: boolean
   subtotal?: number
+  // Order context information
+  orderType?: 'custom-card' | 'limited-edition' | 'marketplace' | 'cart'
+  orderDetails?: {
+    // For custom cards
+    customImageUrl?: string
+    cardFinish?: string
+    includeDisplayCase?: boolean
+    displayCaseQuantity?: number
+    // For marketplace
+    listingId?: string
+    // For cart
+    cartItems?: any[]
+  }
 }
 
-export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = false, subtotal }: StripeStyledShippingFormProps) {
+export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = false, subtotal, orderType, orderDetails }: StripeStyledShippingFormProps) {
   const [formData, setFormData] = useState<ShippingAddress>({
     email: '',
     name: '',
@@ -361,7 +374,22 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
         },
         body: JSON.stringify({
           shippingAddress: formData,
-          orderItems: 'Custom Card',
+          orderItems: orderType === 'custom-card' ? 'Custom Card' : 
+                     orderType === 'limited-edition' ? 'Limited Edition Card' :
+                     orderType === 'marketplace' ? 'Marketplace Card' : 'Cart Items',
+          // Include order-specific details
+          ...(orderType === 'custom-card' && orderDetails && {
+            customImageUrl: orderDetails.customImageUrl,
+            cardFinish: orderDetails.cardFinish,
+            includeDisplayCase: orderDetails.includeDisplayCase,
+            displayCaseQuantity: orderDetails.displayCaseQuantity,
+          }),
+          ...(orderType === 'marketplace' && orderDetails && {
+            listingId: orderDetails.listingId,
+          }),
+          ...(orderType === 'cart' && orderDetails && {
+            cartItems: orderDetails.cartItems,
+          }),
         }),
       })
 
