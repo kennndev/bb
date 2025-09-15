@@ -94,9 +94,8 @@ export async function POST(req: NextRequest) {
     // Calculate base amount ($9.00 in cents)
     const baseAmountCents = 900
     
-    // Calculate shipping cost using shared utility (not hardcoded)
-    const shippingCostCents = getShippingCostForCountry(shippingAddress.country)
-    const totalBeforeTaxCents = baseAmountCents + shippingCostCents // Product + Shipping
+    // For crypto payments, we only charge the base amount + tax (no shipping cost)
+    const totalBeforeTaxCents = baseAmountCents // Product only (no shipping for crypto)
 
     // Get tax rate from TaxJar API (more accurate than Stripe Tax)
     let taxRate = 0
@@ -104,7 +103,6 @@ export async function POST(req: NextRequest) {
     
     console.log('🧾 TaxJar Tax Calculation Details:')
     console.log('   Base Amount: $' + (baseAmountCents / 100).toFixed(2))
-    console.log('   Shipping Cost: $' + (shippingCostCents / 100).toFixed(2))
     console.log('   Total Before Tax: $' + (totalBeforeTaxCents / 100).toFixed(2))
     console.log('   Country: ' + shippingAddress.country)
     console.log('   State: ' + shippingAddress.state)
@@ -114,7 +112,7 @@ export async function POST(req: NextRequest) {
     try {
       console.log('   Calling TaxJar API...')
       
-      // Use TaxJar API for accurate tax calculation (including shipping tax)
+      // Use TaxJar API for accurate tax calculation (no shipping for crypto payments)
       const taxCalculation = await taxjar.taxForOrder({
         from_country: 'US',
         from_zip: '89108',
@@ -125,8 +123,8 @@ export async function POST(req: NextRequest) {
         to_state: shippingAddress.state,
         to_city: shippingAddress.city,
         to_street: address,
-        amount: totalBeforeTaxCents / 100, // Convert cents to dollars
-        shipping: shippingCostCents / 100, // Convert cents to dollars
+        amount: totalBeforeTaxCents / 100, // Convert cents to dollars (product only)
+        shipping: 0, // No shipping cost for crypto payments
         line_items: [
           {
             id: 'card-001',
@@ -210,10 +208,10 @@ export async function POST(req: NextRequest) {
       }
     }
     
-    const totalAmountCents = totalBeforeTaxCents + taxAmountCents // Product + Shipping + Tax
+    const totalAmountCents = totalBeforeTaxCents + taxAmountCents // Product + Tax (no shipping for crypto)
     console.log('   💰 Final Amounts:')
     console.log('      Base: $' + (baseAmountCents / 100).toFixed(2))
-    console.log('      Shipping: $' + (shippingCostCents / 100).toFixed(2))
+    console.log('      Shipping: $0.00 (not included in crypto payments)')
     console.log('      Tax: $' + (taxAmountCents / 100).toFixed(2))
     console.log('      Total: $' + (totalAmountCents / 100).toFixed(2))
     console.log('   📊 Database Values:')
@@ -235,8 +233,8 @@ export async function POST(req: NextRequest) {
         transaction_id: transactionId,
         buyer_id: buyerId,
         listing_id: listingId || null,
-        amount_cents: totalAmountCents, // Total: Product + Shipping + Tax
-        base_amount_cents: totalBeforeTaxCents, // Product + Shipping (before tax)
+        amount_cents: totalAmountCents, // Total: Product + Tax (no shipping for crypto)
+        base_amount_cents: totalBeforeTaxCents, // Product only (before tax)
         tax_amount_cents: taxAmountCents,
         tax_rate_percentage: taxRate,
         currency: 'USD',
@@ -299,7 +297,7 @@ export async function POST(req: NextRequest) {
       transactionId,
       amount: totalAmountCents, // Total: Product + Shipping + Tax
       baseAmount: baseAmountCents, // Product only
-      shippingAmount: shippingCostCents, // Shipping only
+      shippingAmount: 0, // No shipping for crypto payments
       taxAmount: taxAmountCents,
       taxRate: taxRate,
       receivingAddress: CRYPTO_RECEIVING_ADDRESS,
