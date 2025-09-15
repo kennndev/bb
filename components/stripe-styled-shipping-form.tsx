@@ -1227,16 +1227,28 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back
           </button>
-          <button
-            type="submit"
-            disabled={isSubmitting || isProcessingCrypto}
-            className="stripe-button stripe-button-primary"
-          >
-            {isSubmitting || isProcessingCrypto ? 'Processing...' : 
-             selectedPaymentMethod === 'crypto' ? 
-               (isConnected ? (cryptoPaymentData ? 'Send Transaction' : 'Create Crypto Payment') : 'Connect Wallet First') : 
-               'Continue to payment'}
-          </button>
+          {/* Show different button based on payment status */}
+          {selectedPaymentMethod === 'crypto' && cryptoPaymentStatus === 'complete' ? (
+            <button
+              type="button"
+              disabled
+              className="stripe-button stripe-button-primary bg-green-600 hover:bg-green-700 cursor-not-allowed"
+            >
+              <Check className="w-4 h-4 mr-2" />
+              Payment Complete
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={isSubmitting || isProcessingCrypto}
+              className="stripe-button stripe-button-primary"
+            >
+              {isSubmitting || isProcessingCrypto ? 'Processing...' : 
+               selectedPaymentMethod === 'crypto' ? 
+                 (isConnected ? (cryptoPaymentData ? 'Send Transaction' : 'Create Crypto Payment') : 'Connect Wallet First') : 
+                 'Continue to payment'}
+            </button>
+          )}
         </div>
       </form>
     </div>
