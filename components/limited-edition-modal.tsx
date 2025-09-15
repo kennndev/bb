@@ -1243,6 +1243,12 @@ export function LimitedEditionModal({ isOpen, onClose }: LimitedEditionModalProp
                 onBack={handleBackToQuantity}
                 isSubmitting={isOrdering}
                 subtotal={currentPricing.totalPrice}
+                orderType="limited-edition"
+                orderDetails={{
+                  cardFinish: 'matte', // Limited edition cards default to matte finish
+                  includeDisplayCase: includeDisplayCase,
+                  displayCaseQuantity: displayCaseQuantity
+                }}
               />
             </div>
           </div>
