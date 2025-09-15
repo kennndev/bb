@@ -801,7 +801,7 @@ export function CustomCardCheckoutModal({ isOpen, onClose, uploadedImage, proces
     }
 
     // Use custom card pricing tiers
-    const customCardData = inventoryState.data.customCard
+    const customCardData = inventoryState.data
     const applicableTiers = customCardData.pricingTiers.filter(
       tier => quantityState.value >= tier.quantity
     )
@@ -1028,7 +1028,7 @@ export function CustomCardCheckoutModal({ isOpen, onClose, uploadedImage, proces
       name: 'Custom Card',
       image: imageUrl,
       quantity: quantityState.value,
-      basePricePerUnit: inventoryState.data?.customCard?.pricePerUnit || 9.00,
+      basePricePerUnit: inventoryState.data?.pricePerUnit || 9.00,
       cardFinish: cardFinish,
       includeDisplayCase: includeDisplayCase,
       displayCaseQuantity: displayCaseQuantity,
@@ -1339,6 +1339,13 @@ export function CustomCardCheckoutModal({ isOpen, onClose, uploadedImage, proces
                 onBack={handleBackToQuantity}
                 isSubmitting={isOrdering}
                 subtotal={currentPricing.totalPrice}
+                orderType="custom-card"
+                orderDetails={{
+                  customImageUrl: (uploadedImageUrl || uploadedImage) || undefined,
+                  cardFinish: cardFinish,
+                  includeDisplayCase: includeDisplayCase,
+                  displayCaseQuantity: displayCaseQuantity
+                }}
               />
             </div>
           </div>
@@ -1745,10 +1752,10 @@ export function CustomCardCheckoutModal({ isOpen, onClose, uploadedImage, proces
                       </div>
 
                       {/* Bulk Discount Tiers Display */}
-                      {inventoryState.data && inventoryState.data.customCard.pricingTiers.length > 1 && !isSoldOut && (
+                      {inventoryState.data && inventoryState.data.pricingTiers.length > 1 && !isSoldOut && (
                         <div className="text-xs text-gray-400 bg-cyber-dark/40 rounded-lg p-2 space-y-1">
                           <p className="font-semibold text-cyber-cyan">💰 Bulk Discounts:</p>
-                          {inventoryState.data.customCard.pricingTiers.slice(1).map((tier, index) => (
+                          {inventoryState.data.pricingTiers.slice(1).map((tier: any, index: any) => (
                             <div key={index} className="flex justify-between">
                               <span>{tier.quantity}+ cards:</span>
                               <span className="text-cyber-purple">
