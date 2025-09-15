@@ -10,10 +10,89 @@ const admin = createClient(
 )
 
 interface StatusUpdateRequest {
-  paymentId: string
-  status: 'pending' | 'submitted' | 'confirmed' | 'failed' | 'cancelled'
+  paymentId?: string
+  transactionId?: string
+  status: 'pending' | 'submitted' | 'complete' | 'failed' | 'cancelled'
   transactionHash?: string
-  confirmationData?: any
+  confirmedAt?: string
+}
+
+// PUT endpoint to update payment status (used by frontend)
+export async function PUT(req: NextRequest) {
+  try {
+    const { paymentId, transactionId, status, transactionHash, confirmedAt }: StatusUpdateRequest = await req.json()
+    
+    if ((!paymentId && !transactionId) || !status) {
+      return NextResponse.json({ error: 'Missing payment ID/transaction ID or status' }, { status: 400 })
+    }
+
+    // Prepare update data
+    const updateData: any = {
+      status,
+      updated_at: new Date().toISOString(),
+    }
+
+    // Add status-specific fields
+    switch (status) {
+      case 'submitted':
+        if (transactionHash) {
+          updateData.transaction_hash = transactionHash
+          updateData.submitted_at = new Date().toISOString()
+        }
+        break
+      case 'complete':
+        updateData.confirmed_at = confirmedAt || new Date().toISOString()
+        if (transactionHash) {
+          updateData.transaction_hash = transactionHash
+        }
+        break
+      case 'failed':
+        updateData.failed_at = new Date().toISOString()
+        break
+    }
+
+    // Build the query
+    let query = admin.from('crypto_payments').update(updateData)
+    
+    if (paymentId) {
+      query = query.eq('id', paymentId)
+    } else if (transactionId) {
+      query = query.eq('transaction_id', transactionId)
+    }
+
+    const { data: updatedPayment, error: updateError } = await query
+      .select(`
+        id,
+        transaction_id,
+        status,
+        amount_cents,
+        transaction_hash,
+        created_at,
+        submitted_at,
+        confirmed_at,
+        failed_at
+      `)
+      .single()
+
+    if (updateError) {
+      console.error('Database update error:', updateError)
+      return NextResponse.json({ error: 'Failed to update payment status' }, { status: 500 })
+    }
+
+    if (!updatedPayment) {
+      return NextResponse.json({ error: 'Payment record not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({
+      success: true,
+      payment: updatedPayment,
+      message: `Payment status updated to ${status}`,
+    })
+
+  } catch (error) {
+    console.error('Crypto payment status update error:', error)
+    return NextResponse.json({ error: 'Status update failed' }, { status: 500 })
+  }
 }
 
 export async function POST(req: NextRequest) {
