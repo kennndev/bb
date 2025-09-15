@@ -4,50 +4,19 @@ import React, { useState, useMemo, useEffect } from "react"
 import { ArrowLeft, Check, Wallet, Loader2 } from "lucide-react"
 import { allCountries } from "country-region-data"
 import { usePrivy } from '@privy-io/react-auth'
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi'
+import { useAccount, useSendTransaction } from 'wagmi'
 import { parseEther } from 'viem'
-import { createPublicClient, http, parseAbi } from "viem"
-import { sepolia } from "viem/chains"
 import { useToast } from '@/hooks/use-toast'
 import { WalletButton } from '@/components/WalletConnect'
 
-/** ---------- Config: Chainlink ETH/USD (Sepolia) ---------- */
-// Official Chainlink ETH/USD data feed (Sepolia)
-const CL_ETH_USD_SEPOLIA = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
-/** Optional RPC override (public ok). Set NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC in env. */
-const ETH_SEPOLIA_RPC = process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC || undefined
-
-const clAbi = parseAbi([
-  "function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)",
-  "function decimals() view returns (uint8)"
-])
-
-const clClient = createPublicClient({
-  chain: sepolia,
-  transport: http(ETH_SEPOLIA_RPC)
-})
-
-/** Read price from Chainlink on-chain feed (Sepolia). Returns a JS number in USD. */
-async function getEthUsdFromChainlink(): Promise<number> {
-  const [ , answer ] = await clClient.readContract({
-    address: CL_ETH_USD_SEPOLIA as `0x${string}`,
-    abi: clAbi,
-    functionName: "latestRoundData"
-  }) as unknown as [bigint, bigint, bigint, bigint, bigint] // keep tuple shape
-  const decimals = await clClient.readContract({
-    address: CL_ETH_USD_SEPOLIA as `0x${string}`,
-    abi: clAbi,
-    functionName: "decimals"
-  }) as unknown as number
-  // answer is int256 with `decimals` places
-  return Number(answer) / 10 ** Number(decimals)
-}
-
-/** ---------- Shipping countries list (unchanged) ---------- */
+// List of countries we ship to
 const SHIPPING_COUNTRIES = [
+  // North America
   { code: 'US', name: 'United States' },
   { code: 'CA', name: 'Canada' },
   { code: 'MX', name: 'Mexico' },
+  
+  // Europe
   { code: 'GB', name: 'United Kingdom' },
   { code: 'DE', name: 'Germany' },
   { code: 'FR', name: 'France' },
@@ -78,6 +47,8 @@ const SHIPPING_COUNTRIES = [
   { code: 'CY', name: 'Cyprus' },
   { code: 'MT', name: 'Malta' },
   { code: 'LU', name: 'Luxembourg' },
+  
+  // Asia-Pacific
   { code: 'AU', name: 'Australia' },
   { code: 'NZ', name: 'New Zealand' },
   { code: 'JP', name: 'Japan' },
@@ -91,11 +62,15 @@ const SHIPPING_COUNTRIES = [
   { code: 'ID', name: 'Indonesia' },
   { code: 'VN', name: 'Vietnam' },
   { code: 'IN', name: 'India' },
+  
+  // Middle East & Africa
   { code: 'AE', name: 'United Arab Emirates' },
   { code: 'SA', name: 'Saudi Arabia' },
   { code: 'IL', name: 'Israel' },
   { code: 'TR', name: 'Turkey' },
   { code: 'ZA', name: 'South Africa' },
+  
+  // Americas (South & Central)
   { code: 'BR', name: 'Brazil' },
   { code: 'AR', name: 'Argentina' },
   { code: 'CL', name: 'Chile' },
@@ -119,13 +94,17 @@ interface StripeStyledShippingFormProps {
   onBack: () => void
   isSubmitting?: boolean
   subtotal?: number
+  // Order context information
   orderType?: 'custom-card' | 'limited-edition' | 'marketplace' | 'cart'
   orderDetails?: {
+    // For custom cards
     customImageUrl?: string
     cardFinish?: string
     includeDisplayCase?: boolean
     displayCaseQuantity?: number
+    // For marketplace
     listingId?: string
+    // For cart
     cartItems?: any[]
   }
 }
@@ -141,88 +120,139 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
     postal_code: '',
     country: 'US',
   })
+  
   const [errors, setErrors] = useState<Partial<Record<keyof ShippingAddress, string>>>({})
   const [keepUpdated, setKeepUpdated] = useState(false)
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<'stripe' | 'crypto' | null>(null)
-
-  // Crypto state
+  
+  // Wallet connection state
   const [cryptoPaymentData, setCryptoPaymentData] = useState<any>(null)
   const [isProcessingCrypto, setIsProcessingCrypto] = useState(false)
   const [cryptoPaymentStatus, setCryptoPaymentStatus] = useState<'pending' | 'processing' | 'submitted' | 'complete' | 'failed'>('pending')
-  const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
-
-  // Chainlink quote state
-  const [quotedEth, setQuotedEth] = useState<string>('0.000000')
-  const [quotedUsd, setQuotedUsd] = useState<number>(0)
-  const [quotedEthUsdPrice, setQuotedEthUsdPrice] = useState<number>(3000)
-  const [quoteSource, setQuoteSource] = useState<'chainlink' | 'coingecko' | 'fallback'>('fallback')
-
-  // Wallet
-  const { ready } = usePrivy()
+  const [txHash, setTxHash] = useState('')
+  
+  // Wallet hooks
+  const { ready, authenticated, login } = usePrivy()
   const { address, isConnected } = useAccount()
+  const { sendTransaction, isPending, isSuccess, data: txData, error: txError } = useSendTransaction()
   const { toast } = useToast()
 
-  const { data: sendHash, isPending: isSendPending, sendTransaction, error: txError } = useSendTransaction()
-  const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash: sendHash })
-
+  // Monitor wallet connection status (simplified like WalletButton)
   useEffect(() => {
-    if (isConfirmed && cryptoPaymentData && sendHash) {
-      setTxHash(sendHash)
-      setCryptoPaymentStatus('complete')
-      // Mark complete in DB
-      updatePaymentStatus(cryptoPaymentData.transactionId, 'complete', sendHash)
-      toast({ title: "Payment Complete", description: "Your crypto payment has been confirmed!" })
+    console.log('🔍 Wallet state changed:', { 
+      ready, 
+      isConnected, 
+      address: address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'none',
+      hasPaymentData: !!cryptoPaymentData 
+    })
+    if (isConnected && address) {
+      console.log('✅ Wallet connected:', address)
+    } else if (!isConnected) {
+      console.log('❌ Wallet disconnected')
     }
-  }, [isConfirmed, cryptoPaymentData, sendHash, toast])
+  }, [ready, isConnected, address, cryptoPaymentData])
 
-  useEffect(() => {
-    if (txError && cryptoPaymentData) {
-      setCryptoPaymentStatus('failed')
-      updatePaymentStatus(cryptoPaymentData.transactionId, 'failed')
-      toast({ title: "Transaction Failed", description: txError.message || "Failed to send transaction", variant: "destructive" })
-    }
-  }, [txError, cryptoPaymentData, toast])
-
-  // Get regions for selected country
+  // Get regions for the selected country
   const regions = useMemo(() => {
     if (!formData.country) return []
+    
     if (Array.isArray(allCountries)) {
       const firstItem = allCountries[0]
       if (Array.isArray(firstItem)) {
         const countryData = allCountries.find((c: [string, string, Array<[string, string]>]) => c[1] === formData.country)
         if (countryData && countryData[2]) {
-          return countryData[2].map((region: [string, string]) => ({ name: region[0], shortCode: region[1] }))
+          return countryData[2].map((region: [string, string]) => ({
+            name: region[0],
+            shortCode: region[1]
+          }))
         }
       } else {
-        // @ts-ignore
+        // @ts-ignore - country-region-data types are complex
         const countryData = allCountries.find((c: any) => c.countryShortCode === formData.country) as any
         return countryData?.regions || []
       }
     }
+    
     return []
   }, [formData.country])
 
   const handleInputChange = (field: keyof ShippingAddress, value: string) => {
     setFormData(prev => {
       const updated = { ...prev, [field]: value }
-      if (field === 'country' && value !== prev.country) updated.state = ''
+      
+      if (field === 'country' && value !== prev.country) {
+        updated.state = ''
+      }
+      
       return updated
     })
-    if (errors[field]) setErrors(prev => ({ ...prev, [field]: undefined }))
+    
+    if (errors[field]) {
+      setErrors(prev => ({ ...prev, [field]: undefined }))
+    }
   }
 
   const validateForm = (): boolean => {
     const newErrors: Partial<Record<keyof ShippingAddress, string>> = {}
-    if (!formData.email.trim()) newErrors.email = 'Email is required'
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) newErrors.email = 'Please enter a valid email'
-    if (!formData.name.trim()) newErrors.name = 'Full name is required'
-    if (!formData.line1.trim()) newErrors.line1 = 'Address is required'
-    if (!formData.city.trim()) newErrors.city = 'City is required'
-    if (regions.length > 0 && !formData.state.trim()) newErrors.state = 'State/Province is required'
-    if (!formData.postal_code.trim()) newErrors.postal_code = 'Postal/ZIP code is required'
-    if (!formData.country) newErrors.country = 'Country is required'
+
+    if (!formData.email.trim()) {
+      newErrors.email = 'Email is required'
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      newErrors.email = 'Please enter a valid email'
+    }
+
+    if (!formData.name.trim()) {
+      newErrors.name = 'Full name is required'
+    }
+
+    if (!formData.line1.trim()) {
+      newErrors.line1 = 'Address is required'
+    }
+
+    if (!formData.city.trim()) {
+      newErrors.city = 'City is required'
+    }
+
+    if (!formData.state.trim() && regions.length > 0) {
+      newErrors.state = 'State/Province is required'
+    }
+
+    if (!formData.postal_code.trim()) {
+      newErrors.postal_code = 'Postal/ZIP code is required'
+    }
+
+    if (!formData.country) {
+      newErrors.country = 'Country is required'
+    }
+
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    console.log('📝 Form submitted, validating...', formData)
+    
+    if (!selectedPaymentMethod) {
+      alert('Please select a payment method')
+      return
+    }
+    
+    if (selectedPaymentMethod === 'crypto') {
+      // Handle crypto payment flow
+      if (cryptoPaymentData && isConnected) {
+        // Payment already created, send transaction
+        handleSendCryptoPayment()
+      } else {
+        // Create payment first
+        createCryptoPayment()
+      }
+    } else if (validateForm()) {
+      console.log('✅ Form validation passed, calling onSubmit')
+      onSubmit(formData, selectedPaymentMethod)
+    } else {
+      console.log('❌ Form validation failed')
+    }
   }
 
   const getShippingPrice = () => {
@@ -233,44 +263,59 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
   }
 
   const shippingPrice = getShippingPrice()
-  const total = subtotal !== undefined && shippingPrice !== null ? subtotal + (shippingPrice || 0) : shippingPrice
+  const total = subtotal ? subtotal + (shippingPrice || 0) : shippingPrice
 
-  /** Quote ETH using Chainlink on-chain first, fallback to CoinGecko, then hardcoded */
-  const quoteEth = async (usdCents: number) => {
-    const usd = usdCents / 100
+  // Get ETH price - real-time for mainnet, fixed for testnet
+  const getETHPrice = async (): Promise<number> => {
+    // Check if we're on testnet (Base Sepolia)
+    const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === '84532' || 
+                     window.location.hostname === 'localhost'
+    
+    if (isTestnet) {
+      // Base Sepolia testnet - ETH has no real value, using fixed price for testing
+      return 3000 // $3000 per ETH for testnet calculations
+    }
+    
+    // Mainnet - get real-time price from Chainlink Price Feeds API
     try {
-      const price = await getEthUsdFromChainlink()
-      setQuotedEthUsdPrice(price)
-      setQuoteSource('chainlink')
-      setQuotedUsd(usd)
-      setQuotedEth((usd / price).toFixed(6))
-      return
-    } catch (e) {
-      // Fallback to CoinGecko
+      // Use Chainlink Price Feeds API for real-time ETH price
+      const response = await fetch(`https://api.chain.link/v1/price-feeds/eth-usd`, {
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Chainlink API error: ${response.status}`)
+      }
+      
+      const data = await response.json()
+      return data.price || data.ethereum?.usd
+      
+    } catch (error) {
+      console.warn('Failed to fetch ETH price from Chainlink, trying CoinGecko fallback:', error)
+      
+      // Fallback to CoinGecko if Chainlink fails
       try {
-        const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
-        const d = await r.json()
-        const price = d?.ethereum?.usd ?? 3000
-        setQuotedEthUsdPrice(price)
-        setQuoteSource('coingecko')
-        setQuotedUsd(usd)
-        setQuotedEth((usd / price).toFixed(6))
-        return
-      } catch {
-        setQuotedEthUsdPrice(3000)
-        setQuoteSource('fallback')
-        setQuotedUsd(usd)
-        setQuotedEth((usd / 3000).toFixed(6))
+        const coinGeckoResponse = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
+        const data = await coinGeckoResponse.json()
+        return data.ethereum.usd
+      } catch (fallbackError) {
+        console.warn('CoinGecko fallback also failed, using hardcoded price:', fallbackError)
+        return 3000 // $3000 per ETH as final fallback
       }
     }
   }
 
-  // Backend status updater
+  // Crypto payment functions
+  
   const updatePaymentStatus = async (transactionId: string, status: string, transactionHash?: string) => {
     try {
-      const res = await fetch('/api/crypto-payment/status', {
+      const response = await fetch('/api/crypto-payment/status', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           transactionId,
           status,
@@ -278,70 +323,121 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
           ...(status === 'complete' && { confirmedAt: new Date().toISOString() })
         }),
       })
-      if (!res.ok) throw new Error('Failed to update payment status')
-    } catch (err) {
-      console.error('Failed to update payment status:', err)
+
+      if (!response.ok) {
+        throw new Error('Failed to update payment status')
+      }
+
+      console.log(`✅ Payment status updated to: ${status}`, transactionHash ? `Hash: ${transactionHash}` : '')
+    } catch (error) {
+      console.error('❌ Failed to update payment status:', error)
     }
   }
 
-  // Create payment → then quote ETH once
+  const createCryptoPayment = async () => {
+    if (!validateForm()) {
+      toast({
+        title: "Form Validation Error",
+        description: "Please fill in all required fields",
+        variant: "destructive"
+      })
+      return
+    }
+
+    // Only create payment if wallet is connected AND no payment exists yet
+    if (isConnected && !cryptoPaymentData) {
+      await handleCreateAndSendPayment()
+    } else if (!isConnected) {
+      toast({
+        title: "Wallet Not Connected",
+        description: "Please connect your wallet first",
+        variant: "destructive"
+      })
+    }
+  }
+
   const handleCreateAndSendPayment = async () => {
     setIsProcessingCrypto(true)
+    
     try {
+      // First create the payment
       const response = await fetch('/api/crypto-payment', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+        },
         body: JSON.stringify({
           shippingAddress: formData,
-          orderItems:
-            orderType === 'custom-card' ? 'Custom Card' :
-            orderType === 'limited-edition' ? 'Limited Edition Card' :
-            orderType === 'marketplace' ? 'Marketplace Card' : 'Cart Items',
+          orderItems: orderType === 'custom-card' ? 'Custom Card' : 
+                     orderType === 'limited-edition' ? 'Limited Edition Card' :
+                     orderType === 'marketplace' ? 'Marketplace Card' : 'Cart Items',
+          // Include order-specific details
           ...(orderType === 'custom-card' && orderDetails && {
             customImageUrl: orderDetails.customImageUrl,
             cardFinish: orderDetails.cardFinish,
             includeDisplayCase: orderDetails.includeDisplayCase,
             displayCaseQuantity: orderDetails.displayCaseQuantity,
           }),
-          ...(orderType === 'marketplace' && orderDetails && { listingId: orderDetails.listingId }),
-          ...(orderType === 'cart' && orderDetails && { cartItems: orderDetails.cartItems }),
+          ...(orderType === 'marketplace' && orderDetails && {
+            listingId: orderDetails.listingId,
+          }),
+          ...(orderType === 'cart' && orderDetails && {
+            cartItems: orderDetails.cartItems,
+          }),
         }),
       })
+
       if (!response.ok) {
         const errorData = await response.json()
         throw new Error(errorData.error || 'Failed to create crypto payment')
       }
+
       const data = await response.json()
+      console.log('💳 Crypto Payment Created:', {
+        baseAmount: data.baseAmount,
+        taxAmount: data.taxAmount,
+        taxRate: data.taxRate,
+        totalAmount: data.amount,
+        receivingAddress: data.receivingAddress
+      })
       setCryptoPaymentData(data)
       setCryptoPaymentStatus('pending')
-
-      // Quote ETH from Chainlink (or fallback) once and cache
-      await quoteEth(data.amount)
+      
+      // Don't automatically send - wait for user to click "Send Transaction"
+      console.log('✅ Crypto payment created successfully. Ready to send transaction.')
+      
     } catch (error) {
-      console.error('Crypto payment creation failed:', error)
+      console.error('Crypto payment creation/sending failed:', error)
+      toast({
+        title: "Payment Failed",
+        description: error instanceof Error ? error.message : "Failed to create/send payment",
+        variant: "destructive"
+      })
       setCryptoPaymentStatus('failed')
-      toast({ title: "Payment Failed", description: error instanceof Error ? error.message : "Failed to create payment", variant: "destructive" })
     } finally {
       setIsProcessingCrypto(false)
     }
   }
 
-  const createCryptoPayment = async () => {
-    if (!validateForm()) {
-      toast({ title: "Form Validation Error", description: "Please fill in all required fields", variant: "destructive" })
+  const handleSendCryptoPayment = async () => {
+    console.log('🚀 handleSendCryptoPayment called:', { 
+      hasPaymentData: !!cryptoPaymentData, 
+      isConnected, 
+      address 
+    })
+    
+    if (!cryptoPaymentData) {
+      console.error('❌ No payment data available')
       return
     }
-    if (isConnected && !cryptoPaymentData) {
-      await handleCreateAndSendPayment()
-    } else if (!isConnected) {
-      toast({ title: "Wallet Not Connected", description: "Please connect your wallet first", variant: "destructive" })
-    }
-  }
-
-  const handleSendCryptoPayment = async () => {
-    if (!cryptoPaymentData) return
+    
     if (!isConnected) {
-      toast({ title: "Wallet Not Connected", description: "Please connect your wallet first", variant: "destructive" })
+      console.error('❌ Wallet not connected')
+      toast({
+        title: "Wallet Not Connected",
+        description: "Please connect your wallet first",
+        variant: "destructive"
+      })
       return
     }
 
@@ -349,43 +445,87 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
     setCryptoPaymentStatus('processing')
 
     try {
+      // Get real-time ETH price from Chainlink API
+      const ethPrice: number = await getETHPrice()
+      const amountInUSD = cryptoPaymentData.amount / 100
+      const ethAmount = (amountInUSD / ethPrice).toFixed(6)
+      
+      console.log(`💸 Payment Details:`)
+      console.log(`   Base Amount: $${(cryptoPaymentData.baseAmount / 100).toFixed(2)}`)
+      console.log(`   Tax Amount: $${(cryptoPaymentData.taxAmount / 100).toFixed(2)} (${cryptoPaymentData.taxRate.toFixed(1)}%)`)
+      console.log(`   Total USD: $${amountInUSD.toFixed(2)}`)
+      console.log(`   ETH Price: $${ethPrice}`)
+      console.log(`   ETH Amount: ${ethAmount} ETH`)
+      console.log(`   Network: Base Sepolia`)
+      console.log(`   To Address: ${cryptoPaymentData.receivingAddress}`)
+      
       await sendTransaction({
         to: cryptoPaymentData.receivingAddress as `0x${string}`,
-        value: parseEther(quotedEth), // exact same quoted amount shown in UI
+        value: parseEther(ethAmount),
       })
+      
+      console.log('🚀 Transaction sent, waiting for confirmation...')
       setCryptoPaymentStatus('submitted')
-      toast({ title: "Transaction Sent", description: "Submitted to the network. Waiting for confirmation..." })
+      
+      toast({
+        title: "Transaction Sent",
+        description: "Transaction submitted to blockchain, waiting for confirmation...",
+        variant: "default"
+      })
+      
     } catch (error) {
       console.error('Payment error:', error)
       setCryptoPaymentStatus('failed')
-      await updatePaymentStatus(cryptoPaymentData.transactionId, 'failed')
-      toast({ title: "Payment Failed", description: error instanceof Error ? error.message : "Failed to send payment", variant: "destructive" })
+      
+      // Update status to failed in database
+      if (cryptoPaymentData) {
+        await updatePaymentStatus(cryptoPaymentData.transactionId, 'failed')
+      }
+      
+      toast({
+        title: "Payment Failed",
+        description: error instanceof Error ? error.message : "Failed to send payment",
+        variant: "destructive"
+      })
     } finally {
       setIsProcessingCrypto(false)
     }
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!selectedPaymentMethod) {
-      alert('Please select a payment method')
-      return
+  // Monitor transaction status
+  React.useEffect(() => {
+    if (isSuccess && txData && cryptoPaymentData) {
+      const transactionHash = String(txData)
+      console.log('✅ Transaction confirmed:', transactionHash)
+      setTxHash(transactionHash)
+      setCryptoPaymentStatus('complete')
+      
+      // Update status to complete in database
+      updatePaymentStatus(cryptoPaymentData.transactionId, 'complete', transactionHash)
+      
+      toast({
+        title: "Payment Complete",
+        description: "Your crypto payment has been confirmed!",
+        variant: "default"
+      })
     }
-    if (selectedPaymentMethod === 'crypto') {
-      if (cryptoPaymentData && isConnected) {
-        handleSendCryptoPayment()
-      } else {
-        createCryptoPayment()
+    
+    if (txError) {
+      console.error('❌ Transaction failed:', txError)
+      setCryptoPaymentStatus('failed')
+      
+      // Update status to failed in database
+      if (cryptoPaymentData) {
+        updatePaymentStatus(cryptoPaymentData.transactionId, 'failed')
       }
-      return
+      
+      toast({
+        title: "Transaction Failed",
+        description: txError.message || "Failed to send transaction",
+        variant: "destructive"
+      })
     }
-    if (validateForm()) onSubmit(formData, selectedPaymentMethod)
-  }
-
-  useEffect(() => {
-    console.log('🔍 Wallet state:', { isConnected, address, hasPaymentData: !!cryptoPaymentData })
-  }, [isConnected, address, cryptoPaymentData])
-
+  }, [isSuccess, txData, txError, cryptoPaymentData, toast])
 
   return (
     <div className="p-6 stripe-styled-form-container">
