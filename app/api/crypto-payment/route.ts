@@ -140,7 +140,7 @@ export async function POST(req: NextRequest) {
             id: 'card-001',
             quantity: quantityInt,
             unit_price: unitPriceUsd,
-            product_tax_code: 'A_GEN_TAX' // General tax (works for most jurisdictions)
+            //product_tax_code: 'A_GEN_TAX' // General tax (works for most jurisdictions)
           }
         ],
       }
