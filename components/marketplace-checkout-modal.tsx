@@ -825,6 +825,13 @@ export function MarketplaceCheckoutModal({ isOpen, onClose, listing }: Marketpla
                 onBack={handleBackToQuantity}
                 isSubmitting={isOrdering}
                 subtotal={currentPricing.totalPrice}
+                orderType="marketplace"
+                orderDetails={{
+                  listingId: listing.id,
+                  cardFinish: cardFinish,
+                  includeDisplayCase: includeDisplayCase,
+                  displayCaseQuantity: displayCaseQuantity
+                }}
               />
             </div>
           </div>
