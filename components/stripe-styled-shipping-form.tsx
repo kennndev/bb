@@ -115,7 +115,7 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
   // Wallet connection state
   const [cryptoPaymentData, setCryptoPaymentData] = useState<any>(null)
   const [isProcessingCrypto, setIsProcessingCrypto] = useState(false)
-  const [cryptoPaymentStatus, setCryptoPaymentStatus] = useState<'pending' | 'processing' | 'confirmed' | 'failed'>('pending')
+  const [cryptoPaymentStatus, setCryptoPaymentStatus] = useState<'pending' | 'processing' | 'submitted' | 'complete' | 'failed'>('pending')
   const [txHash, setTxHash] = useState('')
   
   // Wallet hooks
@@ -126,11 +126,18 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
 
   // Monitor wallet connection status (simplified like WalletButton)
   useEffect(() => {
-    console.log('🔍 Wallet state:', { ready, isConnected, address })
+    console.log('🔍 Wallet state changed:', { 
+      ready, 
+      isConnected, 
+      address: address ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'none',
+      hasPaymentData: !!cryptoPaymentData 
+    })
     if (isConnected && address) {
       console.log('✅ Wallet connected:', address)
+    } else if (!isConnected) {
+      console.log('❌ Wallet disconnected')
     }
-  }, [ready, isConnected, address])
+  }, [ready, isConnected, address, cryptoPaymentData])
 
   // Get regions for the selected country
   const regions = useMemo(() => {
@@ -220,7 +227,13 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
     
     if (selectedPaymentMethod === 'crypto') {
       // Handle crypto payment flow
-      createCryptoPayment()
+      if (cryptoPaymentData && isConnected) {
+        // Payment already created, send transaction
+        handleSendCryptoPayment()
+      } else {
+        // Create payment first
+        createCryptoPayment()
+      }
     } else if (validateForm()) {
       console.log('✅ Form validation passed, calling onSubmit')
       onSubmit(formData, selectedPaymentMethod)
@@ -288,6 +301,31 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
   }
 
   // Crypto payment functions
+  
+  const updatePaymentStatus = async (transactionId: string, status: string, transactionHash?: string) => {
+    try {
+      const response = await fetch('/api/crypto-payment/status', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          transactionId,
+          status,
+          transactionHash,
+          ...(status === 'complete' && { confirmedAt: new Date().toISOString() })
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to update payment status')
+      }
+
+      console.log(`✅ Payment status updated to: ${status}`, transactionHash ? `Hash: ${transactionHash}` : '')
+    } catch (error) {
+      console.error('❌ Failed to update payment status:', error)
+    }
+  }
 
   const createCryptoPayment = async () => {
     if (!validateForm()) {
@@ -343,8 +381,8 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
       setCryptoPaymentData(data)
       setCryptoPaymentStatus('pending')
       
-      // Then immediately send the payment
-      await handleSendCryptoPayment()
+      // Don't automatically send - wait for user to click "Send Transaction"
+      console.log('✅ Crypto payment created successfully. Ready to send transaction.')
       
     } catch (error) {
       console.error('Crypto payment creation/sending failed:', error)
@@ -360,7 +398,26 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
   }
 
   const handleSendCryptoPayment = async () => {
-    if (!cryptoPaymentData || !isConnected) return
+    console.log('🚀 handleSendCryptoPayment called:', { 
+      hasPaymentData: !!cryptoPaymentData, 
+      isConnected, 
+      address 
+    })
+    
+    if (!cryptoPaymentData) {
+      console.error('❌ No payment data available')
+      return
+    }
+    
+    if (!isConnected) {
+      console.error('❌ Wallet not connected')
+      toast({
+        title: "Wallet Not Connected",
+        description: "Please connect your wallet first",
+        variant: "destructive"
+      })
+      return
+    }
 
     setIsProcessingCrypto(true)
     setCryptoPaymentStatus('processing')
@@ -385,9 +442,24 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
         value: parseEther(ethAmount),
       })
       
+      console.log('🚀 Transaction sent, waiting for confirmation...')
+      setCryptoPaymentStatus('submitted')
+      
+      toast({
+        title: "Transaction Sent",
+        description: "Transaction submitted to blockchain, waiting for confirmation...",
+        variant: "default"
+      })
+      
     } catch (error) {
       console.error('Payment error:', error)
       setCryptoPaymentStatus('failed')
+      
+      // Update status to failed in database
+      if (cryptoPaymentData) {
+        await updatePaymentStatus(cryptoPaymentData.transactionId, 'failed')
+      }
+      
       toast({
         title: "Payment Failed",
         description: error instanceof Error ? error.message : "Failed to send payment",
@@ -400,26 +472,38 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
 
   // Monitor transaction status
   React.useEffect(() => {
-    if (isSuccess && txData) {
+    if (isSuccess && txData && cryptoPaymentData) {
       const transactionHash = String(txData)
+      console.log('✅ Transaction confirmed:', transactionHash)
       setTxHash(transactionHash)
-      setCryptoPaymentStatus('confirmed')
+      setCryptoPaymentStatus('complete')
+      
+      // Update status to complete in database
+      updatePaymentStatus(cryptoPaymentData.transactionId, 'complete', transactionHash)
       
       toast({
-        title: "Payment Sent!",
-        description: "Your crypto payment has been sent successfully.",
+        title: "Payment Complete",
+        description: "Your crypto payment has been confirmed!",
+        variant: "default"
       })
     }
     
     if (txError) {
+      console.error('❌ Transaction failed:', txError)
       setCryptoPaymentStatus('failed')
+      
+      // Update status to failed in database
+      if (cryptoPaymentData) {
+        updatePaymentStatus(cryptoPaymentData.transactionId, 'failed')
+      }
+      
       toast({
         title: "Transaction Failed",
         description: txError.message || "Failed to send transaction",
         variant: "destructive"
       })
     }
-  }, [isSuccess, txData, txError, toast])
+  }, [isSuccess, txData, txError, cryptoPaymentData, toast])
 
   return (
     <div className="p-6 stripe-styled-form-container">
@@ -1097,7 +1181,7 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
                       </div>
                     )}
 
-                    {cryptoPaymentStatus === 'confirmed' && (
+                    {cryptoPaymentStatus === 'complete' && (
                       <div className="flex items-center justify-center p-3 bg-green-50 rounded-lg">
                         <Check className="mr-2 h-4 w-4 text-green-600" />
                         <span className="text-sm text-green-800">Payment confirmed!</span>
@@ -1121,7 +1205,7 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
                     {/* Payment is already created and wallet is connected - show status */}
                     {cryptoPaymentStatus === 'pending' && (
                       <div className="text-center py-4">
-                        <p className="text-gray-600 mb-4">Payment created! Click "Create Crypto Payment" to send the transaction.</p>
+                        <p className="text-gray-600 mb-4">Payment created! Click "Send Transaction" to complete the payment.</p>
                       </div>
                     )}
                   </div>
@@ -1150,7 +1234,7 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
           >
             {isSubmitting || isProcessingCrypto ? 'Processing...' : 
              selectedPaymentMethod === 'crypto' ? 
-               (isConnected ? (cryptoPaymentData ? 'Send Crypto Payment' : 'Create Crypto Payment') : 'Connect Wallet First') : 
+               (isConnected ? (cryptoPaymentData ? 'Send Transaction' : 'Create Crypto Payment') : 'Connect Wallet First') : 
                'Continue to payment'}
           </button>
         </div>
