@@ -26,7 +26,7 @@ export function StripeStyledCartCheckoutModal({ cartItems, subtotal, onBack, onS
         const cardItem = {
           productId: item.type === 'limited-edition' ? 'limited-edition-card' : 'custom-card',
           quantity: item.quantity,
-          pricePerUnit: item.pricePerUnit,
+          pricePerUnit: item.basePricePerUnit,
           name: item.name,
           image: item.image,
           ...(item.type === 'custom-card' && {
@@ -262,11 +262,11 @@ export function StripeStyledCartCheckoutModal({ cartItems, subtotal, onBack, onS
                     <div className="stripe-order-item-details">
                       <div className="stripe-order-item-name">{item.name}</div>
                       <div className="stripe-order-item-quantity">
-                        Quantity: {item.quantity} × ${item.pricePerUnit.toFixed(2)}
+                        Quantity: {item.quantity} × ${item.basePricePerUnit.toFixed(2)}
                       </div>
                     </div>
                     <div className="stripe-order-item-price">
-                      ${(item.quantity * item.pricePerUnit).toFixed(2)}
+                      ${(item.quantity * item.basePricePerUnit).toFixed(2)}
                     </div>
                   </div>
                   
@@ -303,6 +303,10 @@ export function StripeStyledCartCheckoutModal({ cartItems, subtotal, onBack, onS
                 onBack={onBack}
                 isSubmitting={isProcessing}
                 subtotal={subtotal}
+                orderType="cart"
+                orderDetails={{
+                  cartItems: cartItems
+                }}
               />
             </div>
           </div>
