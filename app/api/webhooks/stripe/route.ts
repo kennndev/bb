@@ -205,12 +205,27 @@ function logEvent(entry: Omit<LogEntry, 'timestamp' | 'correlationId'>, correlat
 
   // Format log message with structure
   const logMessage = `[${logEntry.level}] ${logEntry.message}`;
-  const logData = {
-    ...logEntry,
-    ...(logEntry.data && { context: logEntry.data }),
-    ...(logEntry.error && { error: logEntry.error }),
-    ...(logEntry.performance && { metrics: logEntry.performance })
+  const logData: Record<string, unknown> = {
+    timestamp: logEntry.timestamp,
+    level: logEntry.level,
+    category: logEntry.category,
+    eventId: logEntry.eventId,
+    sessionId: logEntry.sessionId,
+    correlationId: logEntry.correlationId,
+    message: logEntry.message
   };
+
+  if (logEntry.data && typeof logEntry.data === 'object') {
+    logData.context = logEntry.data;
+  }
+  
+  if (logEntry.error) {
+    logData.error = logEntry.error;
+  }
+  
+  if (logEntry.performance && typeof logEntry.performance === 'object') {
+    logData.metrics = logEntry.performance;
+  }
 
   // Log to console with appropriate level
   switch (entry.level) {
@@ -536,7 +551,7 @@ function isRetryableError(error: unknown, config: RetryConfig): boolean {
   }
   
   // Check if error code is in retryable list
-  const errorCode = (error as Record<string, unknown>).code as string | undefined; // Some errors have a code property
+  const errorCode = (error as any).code as string | undefined; // Some errors have a code property
   return config.retryableErrors.some(retryableCode => 
     errorCode === retryableCode || 
     error.message.includes(retryableCode) ||
@@ -1475,7 +1490,7 @@ async function updateUserProfile(
     // Check if profile exists
     const { data: existing } = await supabase
       .from('user_profiles')
-      .select('id, total_orders, total_custom_cards')
+      .select('id, total_orders, total_custom_cards, display_name')
       .eq('email', email)
       .single();
     
@@ -2053,13 +2068,11 @@ async function handleMarketplaceItemsFromCart(session: Stripe.Checkout.Session, 
         throw error;
       }
 
-      // Update listing status to sold
+      // Keep listing active for digital marketplace (don't mark as sold)
       const { error: updateError } = await supabase
         .from('marketplace_listings')
         .update({ 
-          status: 'sold',
-          buyer_id: session.customer_details?.email || null,
-          sold_at: new Date().toISOString(),
+          // status: 'active', // Keep active for multiple purchases
           updated_at: new Date().toISOString()
         })
         .eq('id', item.listingId);
