@@ -754,6 +754,18 @@ export function MarketplaceCheckoutModal({ isOpen, onClose, listing }: Marketpla
         shippingAddress: address,
       })
       
+      // Validate address fields
+      console.log('🔍 Address validation:', {
+        hasEmail: !!address.email,
+        hasName: !!address.name,
+        hasLine1: !!address.line1,
+        hasCity: !!address.city,
+        hasState: !!address.state,
+        hasPostalCode: !!address.postal_code,
+        hasCountry: !!address.country,
+        fullAddress: address
+      })
+      
       // Create crypto payment
       const response = await csrfFetch('/api/crypto-payment', {
         method: 'POST',
