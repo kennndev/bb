@@ -4,44 +4,13 @@ import React, { useState, useMemo, useEffect } from "react"
 import { ArrowLeft, Check, Wallet, Loader2 } from "lucide-react"
 import { allCountries } from "country-region-data"
 import { usePrivy } from '@privy-io/react-auth'
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi'
-import { parseEther } from 'viem'
-import { createPublicClient, http, parseAbi } from "viem"
-import { sepolia } from "viem/chains"
+import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { parseUnits } from 'viem'
 import { useToast } from '@/hooks/use-toast'
 import { WalletButton } from '@/components/WalletConnect'
 
-/** ---------- Config: Chainlink ETH/USD (Sepolia) ---------- */
-// Official Chainlink ETH/USD data feed (Sepolia)
-const CL_ETH_USD_SEPOLIA = "0x694AA1769357215DE4FAC081bf1f309aDC325306"
-/** Optional RPC override (public ok). Set NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC in env. */
-const ETH_SEPOLIA_RPC = process.env.NEXT_PUBLIC_ETHEREUM_SEPOLIA_RPC || undefined
-
-const clAbi = parseAbi([
-  "function latestRoundData() view returns (uint80,int256,uint256,uint256,uint80)",
-  "function decimals() view returns (uint8)"
-])
-
-const clClient = createPublicClient({
-  chain: sepolia,
-  transport: http(ETH_SEPOLIA_RPC)
-})
-
-/** Read price from Chainlink on-chain feed (Sepolia). Returns a JS number in USD. */
-async function getEthUsdFromChainlink(): Promise<number> {
-  const [ , answer ] = await clClient.readContract({
-    address: CL_ETH_USD_SEPOLIA as `0x${string}`,
-    abi: clAbi,
-    functionName: "latestRoundData"
-  }) as unknown as [bigint, bigint, bigint, bigint, bigint] // keep tuple shape
-  const decimals = await clClient.readContract({
-    address: CL_ETH_USD_SEPOLIA as `0x${string}`,
-    abi: clAbi,
-    functionName: "decimals"
-  }) as unknown as number
-  // answer is int256 with `decimals` places
-  return Number(answer) / 10 ** Number(decimals)
-}
+/** ---------- USDC Configuration ---------- */
+const USDC_CONTRACT_ADDRESS = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
 
 /** ---------- Shipping countries list (unchanged) ---------- */
 const SHIPPING_COUNTRIES = [
@@ -151,18 +120,16 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
   const [cryptoPaymentStatus, setCryptoPaymentStatus] = useState<'pending' | 'processing' | 'submitted' | 'complete' | 'failed'>('pending')
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
 
-  // Chainlink quote state
-  const [quotedEth, setQuotedEth] = useState<string>('0.000000')
+  // USDC quote state
+  const [quotedUsdc, setQuotedUsdc] = useState<string>('0.000000')
   const [quotedUsd, setQuotedUsd] = useState<number>(0)
-  const [quotedEthUsdPrice, setQuotedEthUsdPrice] = useState<number>(3000)
-  const [quoteSource, setQuoteSource] = useState<'chainlink' | 'coingecko' | 'fallback'>('fallback')
 
   // Wallet
   const { ready } = usePrivy()
   const { address, isConnected } = useAccount()
   const { toast } = useToast()
 
-  const { data: sendHash, isPending: isSendPending, sendTransaction, error: txError } = useSendTransaction()
+  const { data: sendHash, isPending: isSendPending, writeContract, error: txError } = useWriteContract()
   const { isLoading: isConfirming, isSuccess: isConfirmed } = useWaitForTransactionReceipt({ hash: sendHash })
 
   useEffect(() => {
@@ -235,34 +202,11 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
   const shippingPrice = getShippingPrice()
   const total = subtotal !== undefined && shippingPrice !== null ? subtotal + (shippingPrice || 0) : shippingPrice
 
-  /** Quote ETH using Chainlink on-chain first, fallback to CoinGecko, then hardcoded */
-  const quoteEth = async (usdCents: number) => {
+  /** Quote USDC - 1:1 with USD */
+  const quoteUsdc = async (usdCents: number) => {
     const usd = usdCents / 100
-    try {
-      const price = await getEthUsdFromChainlink()
-      setQuotedEthUsdPrice(price)
-      setQuoteSource('chainlink')
-      setQuotedUsd(usd)
-      setQuotedEth((usd / price).toFixed(6))
-      return
-    } catch (e) {
-      // Fallback to CoinGecko
-      try {
-        const r = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
-        const d = await r.json()
-        const price = d?.ethereum?.usd ?? 3000
-        setQuotedEthUsdPrice(price)
-        setQuoteSource('coingecko')
-        setQuotedUsd(usd)
-        setQuotedEth((usd / price).toFixed(6))
-        return
-      } catch {
-        setQuotedEthUsdPrice(3000)
-        setQuoteSource('fallback')
-        setQuotedUsd(usd)
-        setQuotedEth((usd / 3000).toFixed(6))
-      }
-    }
+    setQuotedUsd(usd)
+    setQuotedUsdc(usd.toFixed(6)) // USDC has 6 decimals, 1 USDC = 1 USD
   }
 
   // Backend status updater
@@ -315,8 +259,8 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
       setCryptoPaymentData(data)
       setCryptoPaymentStatus('pending')
 
-      // Quote ETH from Chainlink (or fallback) once and cache
-      await quoteEth(data.amount)
+      // Quote USDC (1:1 with USD)
+      await quoteUsdc(data.amount)
     } catch (error) {
       console.error('Crypto payment creation failed:', error)
       setCryptoPaymentStatus('failed')
@@ -349,9 +293,26 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
     setCryptoPaymentStatus('processing')
 
     try {
-      await sendTransaction({
-        to: cryptoPaymentData.receivingAddress as `0x${string}`,
-        value: parseEther(quotedEth), // exact same quoted amount shown in UI
+      // USDC transfer function call
+      await writeContract({
+        address: cryptoPaymentData.usdcContractAddress as `0x${string}`,
+        abi: [
+          {
+            name: 'transfer',
+            type: 'function',
+            stateMutability: 'nonpayable',
+            inputs: [
+              { name: 'to', type: 'address' },
+              { name: 'amount', type: 'uint256' }
+            ],
+            outputs: [{ name: '', type: 'bool' }]
+          }
+        ],
+        functionName: 'transfer',
+        args: [
+          cryptoPaymentData.receivingAddress as `0x${string}`,
+          parseUnits(quotedUsdc, 6) // USDC has 6 decimals
+        ]
       })
       setCryptoPaymentStatus('submitted')
       toast({ title: "Transaction Sent", description: "Submitted to the network. Waiting for confirmation..." })
@@ -1004,23 +965,14 @@ export function StripeStyledShippingForm({ onSubmit, onBack, isSubmitting = fals
                   </div>
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-sm text-gray-600">Currency:</span>
-                    <span className="text-sm font-mono">ETH</span>
+                    <span className="text-sm font-mono">USDC</span>
                   </div>
                   <div className="flex justify-between items-center border-t pt-2">
-  <span className="text-sm text-gray-600">ETH Amount:</span>
-  <span className="text-sm font-mono font-bold">{quotedEth} ETH</span>
-</div>
-<div className="text-xs text-gray-500 text-center mt-2">
-  {quoteSource === 'chainlink' && `Using Chainlink on-chain price @ $${quotedEthUsdPrice.toFixed(2)}`}
-  {quoteSource === 'coingecko' && `Using CoinGecko price @ $${quotedEthUsdPrice.toFixed(2)}`}
-  {quoteSource === 'fallback' && `Using fixed price @ $${quotedEthUsdPrice.toFixed(2)}`}
-</div>
-
+                    <span className="text-sm text-gray-600">USDC Amount:</span>
+                    <span className="text-sm font-mono font-bold">{quotedUsdc} USDC</span>
+                  </div>
                   <div className="text-xs text-gray-500 text-center mt-2">
-                    {process.env.NEXT_PUBLIC_CHAIN_ID === '84532' || window.location.hostname === 'localhost'
-                      ? 'Using fixed testnet ETH price: $3,000'
-                      : 'Using real-time ETH price from Chainlink API'
-                    }
+                    USDC is a stablecoin pegged to the US Dollar (1 USDC = $1.00 USD)
                   </div>
                 </div>
 
