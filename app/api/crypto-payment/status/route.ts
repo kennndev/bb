@@ -67,6 +67,8 @@ export async function PUT(req: NextRequest) {
         transaction_id,
         status,
         amount_cents,
+        buyer_id,
+        listing_id,
         transaction_hash,
         created_at,
         submitted_at,
@@ -82,6 +84,59 @@ export async function PUT(req: NextRequest) {
 
     if (!updatedPayment) {
       return NextResponse.json({ error: 'Payment record not found' }, { status: 404 })
+    }
+
+    // If payment is complete, process the order (same logic as POST method)
+    if (status === 'complete' && updatedPayment.listing_id) {
+      try {
+        // Check if marketplace transaction already exists
+        const { data: existingTransaction } = await admin
+          .from('marketplace_transactions')
+          .select('id')
+          .eq('crypto_payment_id', updatedPayment.id)
+          .single()
+
+        if (!existingTransaction) {
+          // Get listing details
+          const { data: listing } = await admin
+            .from('marketplace_listings')
+            .select('seller_id')
+            .eq('id', updatedPayment.listing_id)
+            .single()
+
+          // Create marketplace transaction record
+          await admin.from('marketplace_transactions').insert({
+            buyer_id: updatedPayment.buyer_id,
+            listing_id: updatedPayment.listing_id,
+            seller_id: listing?.seller_id,
+            amount_cents: updatedPayment.amount_cents,
+            currency: 'USD',
+            status: 'completed',
+            payment_method: 'crypto',
+            crypto_payment_id: updatedPayment.id,
+            transaction_hash: transactionHash,
+            created_at: updatedPayment.confirmed_at || updatedPayment.created_at,
+            updated_at: new Date().toISOString(),
+            credited_at: new Date().toISOString()
+          })
+
+          // Update listing status to sold
+          await admin
+            .from('marketplace_listings')
+            .update({
+              status: 'sold',
+              buyer_id: updatedPayment.buyer_id,
+              sold_at: updatedPayment.confirmed_at || updatedPayment.created_at,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', updatedPayment.listing_id)
+
+          console.log('✅ Order processed successfully for crypto payment:', updatedPayment.id)
+        }
+      } catch (orderError) {
+        console.error('Failed to process order:', orderError)
+        // Don't fail the status update if order processing fails
+      }
     }
 
     return NextResponse.json({
