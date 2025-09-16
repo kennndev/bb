@@ -67,13 +67,13 @@ export async function PUT(req: NextRequest) {
         transaction_id,
         status,
         amount_cents,
-        buyer_id,
-        listing_id,
         transaction_hash,
         created_at,
         submitted_at,
         confirmed_at,
-        failed_at
+        failed_at,
+        buyer_id,
+        listing_id
       `)
       .single()
 
@@ -120,13 +120,11 @@ export async function PUT(req: NextRequest) {
             credited_at: new Date().toISOString()
           })
 
-          // Update listing status to sold
+          // Keep listing active for digital marketplace (don't mark as sold)
           await admin
             .from('marketplace_listings')
             .update({
-              status: 'sold',
-              buyer_id: updatedPayment.buyer_id,
-              sold_at: updatedPayment.confirmed_at || updatedPayment.created_at,
+              // status: 'active', // Keep active for multiple purchases
               updated_at: new Date().toISOString()
             })
             .eq('id', updatedPayment.listing_id)
