@@ -85,13 +85,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to create transaction' }, { status: 500 })
     }
 
-    // Update listing status to sold
+    // Keep listing active for digital marketplace (don't mark as sold)
     const { error: updateError } = await admin
       .from('marketplace_listings')
       .update({
-        status: 'sold',
-        buyer_id: payment.buyer_id,
-        sold_at: payment.confirmed_at || payment.created_at,
+        // status: 'active', // Keep active for multiple purchases
         updated_at: new Date().toISOString()
       })
       .eq('id', payment.listing_id)
