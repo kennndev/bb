@@ -48,7 +48,7 @@ const QUANTITY_CONFIG = {
   MIN: 1,
   MAX: 100,
   DEFAULT: 1,
-} as const
+}
 
 // Create a flippable card preview component for marketplace listings
 function MarketplaceCardPreview({ imageUrl, cardFinish, title }: { imageUrl: string | null, cardFinish?: 'matte' | 'rainbow' | 'gloss', title: string }) {
@@ -425,7 +425,7 @@ export function MarketplaceCheckoutModal({ isOpen, onClose, listing }: Marketpla
   }, [isOpen, isVisible])
 
   // Form state
-  const [quantity, setQuantity] = useState(QUANTITY_CONFIG.DEFAULT)
+  const [quantity, setQuantity] = useState<number>(QUANTITY_CONFIG.DEFAULT)
   const [cardFinish, setCardFinish] = useState<'matte' | 'rainbow' | 'gloss'>('matte')
   const [includeDisplayCase, setIncludeDisplayCase] = useState(false)
   const [displayCaseQuantity, setDisplayCaseQuantity] = useState(1)
@@ -653,7 +653,7 @@ export function MarketplaceCheckoutModal({ isOpen, onClose, listing }: Marketpla
       image: listing.image_url || '/placeholder.svg',
       listingId: listing.id,
       sellerId: listing.seller_id,
-      priceCents: currentPricing.cardsTotalPrice * 100, // Convert back to cents
+      priceCents: (currentPricing.cardsTotalPrice || 0) * 100, // Convert back to cents
       quantity: quantity,
       basePricePerUnit: currentPricing.pricePerUnit, // For marketplace, base price is the listing price
       includeDisplayCase: includeDisplayCase,
@@ -1197,19 +1197,19 @@ export function MarketplaceCheckoutModal({ isOpen, onClose, listing }: Marketpla
                         <div className="flex justify-between">
                           <span>2+ cards:</span>
                           <span className="text-cyber-purple">
-                            25% off (${(currentPricing.basePriceWithFinish * 0.75).toFixed(2)}/card)
+                            25% off (${((currentPricing.basePriceWithFinish || 0) * 0.75).toFixed(2)}/card)
                           </span>
                         </div>
                         <div className="flex justify-between">
                           <span>5+ cards:</span>
                           <span className="text-cyber-purple">
-                            35% off (${(currentPricing.basePriceWithFinish * 0.65).toFixed(2)}/card)
+                            35% off (${((currentPricing.basePriceWithFinish || 0) * 0.65).toFixed(2)}/card)
                           </span>
                         </div>
                         <div className="flex justify-between">
                           <span>10+ cards:</span>
                           <span className="text-cyber-purple">
-                            50% off (${(currentPricing.basePriceWithFinish * 0.50).toFixed(2)}/card)
+                            50% off (${((currentPricing.basePriceWithFinish || 0) * 0.50).toFixed(2)}/card)
                           </span>
                         </div>
                       </div>
