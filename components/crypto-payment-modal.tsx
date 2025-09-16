@@ -8,8 +8,8 @@ import { Label } from '@/components/ui/label'
 import { Copy, Check, ExternalLink, Loader2, Wallet } from 'lucide-react'
 import { useToast } from '@/hooks/use-toast'
 import { usePrivy } from '@privy-io/react-auth'
-import { useAccount, useConnect, useSendTransaction } from 'wagmi'
-import { parseEther } from 'viem'
+import { useAccount, useConnect, useWriteContract } from 'wagmi'
+import { parseUnits } from 'viem'
 
 interface CryptoPaymentModalProps {
   isOpen: boolean
@@ -21,6 +21,8 @@ interface CryptoPaymentModalProps {
     taxAmount: number
     taxRate: number
     receivingAddress: string
+    usdcContractAddress: string
+    tokenType: string
     paymentId: string
     message: string
   } | null
@@ -40,7 +42,7 @@ export function CryptoPaymentModal({ isOpen, onClose, paymentData }: CryptoPayme
   const { ready, authenticated, login } = usePrivy()
   const { address, isConnected } = useAccount()
   const { connectors, connect } = useConnect()
-  const { sendTransaction, isPending, isSuccess, data: txData, error: txError } = useSendTransaction()
+  const { writeContract, isPending, isSuccess, data: txData, error: txError } = useWriteContract()
 
   // Monitor transaction status
   useEffect(() => {
@@ -121,17 +123,32 @@ export function CryptoPaymentModal({ isOpen, onClose, paymentData }: CryptoPayme
     setPaymentStatus('processing')
 
     try {
-      // Get ETH price (real-time for mainnet, fixed for testnet)
-      const ethPrice = await getETHPrice()
       const amountInUSD = paymentData.amount / 100 // Convert cents to USD
-      const ethAmount = (amountInUSD / ethPrice).toFixed(6)
+      const usdcAmount = amountInUSD.toFixed(6) // USDC has 6 decimals
       
       const networkName = process.env.NEXT_PUBLIC_CHAIN_ID === '84532' ? 'Base Sepolia' : 'Base Mainnet'
-      console.log(`💸 Sending ${ethAmount} ETH ($${amountInUSD.toFixed(2)}) on ${networkName}`)
+      console.log(`💸 Sending ${usdcAmount} USDC ($${amountInUSD.toFixed(2)}) on ${networkName}`)
       
-      await sendTransaction({
-        to: paymentData.receivingAddress as `0x${string}`,
-        value: parseEther(ethAmount),
+      // USDC transfer function call
+      await writeContract({
+        address: paymentData.usdcContractAddress as `0x${string}`,
+        abi: [
+          {
+            name: 'transfer',
+            type: 'function',
+            stateMutability: 'nonpayable',
+            inputs: [
+              { name: 'to', type: 'address' },
+              { name: 'amount', type: 'uint256' }
+            ],
+            outputs: [{ name: '', type: 'bool' }]
+          }
+        ],
+        functionName: 'transfer',
+        args: [
+          paymentData.receivingAddress as `0x${string}`,
+          parseUnits(usdcAmount, 6) // USDC has 6 decimals
+        ]
       })
       
     } catch (error) {
@@ -147,53 +164,6 @@ export function CryptoPaymentModal({ isOpen, onClose, paymentData }: CryptoPayme
     }
   }
 
-  // Get ETH price - real-time for mainnet, fixed for testnet
-  const getETHPrice = async (): Promise<number> => {
-    // Check if we're on testnet (Base Sepolia)
-    const isTestnet = process.env.NEXT_PUBLIC_CHAIN_ID === '84532' || 
-                     window.location.hostname === 'localhost'
-    
-    if (isTestnet) {
-      // Base Sepolia testnet - ETH has no real value, using fixed price for testing
-      return 3000 // $3000 per ETH for testnet calculations
-    }
-    
-    // Mainnet - get real-time price from Alchemy Prices API
-    try {
-      const alchemyApiKey = process.env.NEXT_PUBLIC_ALCHEMY_API_KEY
-      if (!alchemyApiKey) {
-        throw new Error('Alchemy API key not configured')
-      }
-      
-      // Use Alchemy Prices API for real-time ETH price
-      const response = await fetch(`https://prices-api.alchemy.com/v1/eth/usd`, {
-        headers: {
-          'Authorization': `Bearer ${alchemyApiKey}`,
-          'Content-Type': 'application/json',
-        }
-      })
-      
-      if (!response.ok) {
-        throw new Error(`Alchemy API error: ${response.status}`)
-      }
-      
-      const data = await response.json()
-      return data.price || data.usd || data.ethereum?.usd
-      
-    } catch (error) {
-      console.warn('Failed to fetch ETH price from Alchemy, trying CoinGecko fallback:', error)
-      
-      // Fallback to CoinGecko if Alchemy fails
-      try {
-        const coinGeckoResponse = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd')
-        const data = await coinGeckoResponse.json()
-        return data.ethereum.usd
-      } catch (fallbackError) {
-        console.warn('CoinGecko fallback also failed, using hardcoded price:', fallbackError)
-        return 3000 // $3000 per ETH as final fallback
-      }
-    }
-  }
 
   const handleConnectWallet = async () => {
     if (!ready) return
@@ -248,7 +218,7 @@ export function CryptoPaymentModal({ isOpen, onClose, paymentData }: CryptoPayme
             </div>
             <div className="flex justify-between text-xs text-gray-500">
               <span>Currency:</span>
-              <span className="font-mono">ETH</span>
+              <span className="font-mono">USDC</span>
             </div>
           </div>
 
@@ -384,12 +354,9 @@ export function CryptoPaymentModal({ isOpen, onClose, paymentData }: CryptoPayme
 
           {/* Help Text */}
           <div className="text-xs text-gray-500 text-center space-y-1">
-            <p>Send exactly ${(paymentData.amount / 100).toFixed(2)} USD worth of ETH to the address above.</p>
+            <p>Send exactly ${(paymentData.amount / 100).toFixed(2)} USDC to the address above.</p>
             <p>
-              {process.env.NEXT_PUBLIC_CHAIN_ID === '84532' || window.location.hostname === 'localhost'
-                ? 'Using fixed testnet ETH price of $3,000 for Base Sepolia.'
-                : 'Using real-time ETH price from Alchemy API.'
-              }
+              USDC is a stablecoin pegged to the US Dollar (1 USDC = $1.00 USD).
             </p>
             <p>
               Make sure you're connected to {process.env.NEXT_PUBLIC_CHAIN_ID === '84532' ? 'Base Sepolia testnet' : 'Base Mainnet'}.
